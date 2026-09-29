@@ -25,13 +25,13 @@ func main() {
             }
         }
     }
-
+    // Basic root handler
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         fmt.Fprintln(w, "infraX control plane (skeleton)")
     })
 
-    // Simple endpoint to record a deployment (tenant + image) into Postgres if configured
-    http.HandleFunc("/deploy", func(w http.ResponseWriter, r *http.Request) {
+    // /deploy requires API key if ADMIN_API_KEY is set
+    http.HandleFunc("/deploy", withAuth(func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
             http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
             return
@@ -53,9 +53,57 @@ func main() {
             }
         }
         w.WriteHeader(http.StatusAccepted)
-    })
+    }))
+
+    // /webhook: lightweight webhook receiver (requires API key if set)
+    http.HandleFunc("/webhook", withAuth(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+        var payload map[string]interface{}
+        if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+            http.Error(w, "bad request", http.StatusBadRequest)
+            return
+        }
+        // If caller provides explicit image/tenant fields, record them
+        img, _ := payload["image"].(string)
+        tenant, _ := payload["tenant"].(string)
+        if img != "" {
+            if tenant == "" {
+                tenant = "webhook"
+            }
+            if DB != nil {
+                if err := RecordDeployment(tenant, img); err != nil {
+                    log.Printf("db insert error (webhook): %v", err)
+                    http.Error(w, "internal", http.StatusInternalServerError)
+                    return
+                }
+            }
+            w.WriteHeader(http.StatusAccepted)
+            return
+        }
+        // Otherwise accept and acknowledge
+        w.WriteHeader(http.StatusAccepted)
+    }))
 
     log.Println("control plane listening :9090")
     log.Fatal(http.ListenAndServe(":9090", nil))
+}
+
+// withAuth wraps an http.HandlerFunc and enforces ADMIN_API_KEY when set
+func withAuth(h http.HandlerFunc) http.HandlerFunc {
+    apiKey := os.Getenv("ADMIN_API_KEY")
+    if apiKey == "" {
+        return h
+    }
+    return func(w http.ResponseWriter, r *http.Request) {
+        got := r.Header.Get("X-API-Key")
+        if got == "" || got != apiKey {
+            http.Error(w, "unauthorized", http.StatusUnauthorized)
+            return
+        }
+        h(w, r)
+    }
 }
 

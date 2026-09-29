@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: infrax
+          POSTGRES_USER: infrax
+          POSTGRES_PASSWORD: changeme
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+      - name: Wait for Postgres
+        run: |
+          echo "Waiting for Postgres..."
+          for i in $(seq 1 20); do
+            pg_isready -h localhost -p 5432 -U infrax && break || sleep 1
+          done
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://infrax:changeme@localhost:5432/infrax?sslmode=disable
+          ADMIN_API_KEY: testkey
+        run: |
+          go test ./... -v
