@@ -1,0 +1,9 @@
+global:
+  postgres:
+    postgresqlDatabase: infrax
+    postgresqlUsername: infrax
+    postgresqlPassword: changeme
+
+primary:
+  persistence:
+    enabled: false
