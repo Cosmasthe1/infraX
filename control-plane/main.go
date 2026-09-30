@@ -1,6 +1,7 @@
 package main
 
 import (
+    "context"
     "database/sql"
     "encoding/json"
     "fmt"
@@ -25,13 +26,24 @@ func main() {
             }
         }
     }
-    // Basic root handler
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+
+    srv := startServer(":9090")
+    defer func() {
+        if err := srv.Shutdown(context.Background()); err != nil {
+            log.Printf("shutdown error: %v", err)
+        }
+    }()
+    select {}
+}
+
+func startServer(addr string) *http.Server {
+    mux := http.NewServeMux()
+
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         fmt.Fprintln(w, "infraX control plane (skeleton)")
     })
 
-    // /deploy requires API key if ADMIN_API_KEY is set
-    http.HandleFunc("/deploy", withAuth(func(w http.ResponseWriter, r *http.Request) {
+    mux.HandleFunc("/deploy", withAuth(func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
             http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
             return
@@ -55,8 +67,7 @@ func main() {
         w.WriteHeader(http.StatusAccepted)
     }))
 
-    // /webhook: lightweight webhook receiver (requires API key if set)
-    http.HandleFunc("/webhook", withAuth(func(w http.ResponseWriter, r *http.Request) {
+    mux.HandleFunc("/webhook", withAuth(func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
             http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
             return
@@ -66,7 +77,6 @@ func main() {
             http.Error(w, "bad request", http.StatusBadRequest)
             return
         }
-        // If caller provides explicit image/tenant fields, record them
         img, _ := payload["image"].(string)
         tenant, _ := payload["tenant"].(string)
         if img != "" {
@@ -83,12 +93,17 @@ func main() {
             w.WriteHeader(http.StatusAccepted)
             return
         }
-        // Otherwise accept and acknowledge
         w.WriteHeader(http.StatusAccepted)
     }))
 
-    log.Println("control plane listening :9090")
-    log.Fatal(http.ListenAndServe(":9090", nil))
+    srv := &http.Server{Addr: addr, Handler: mux}
+    go func() {
+        log.Printf("control plane listening %s", addr)
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            log.Printf("server error: %v", err)
+        }
+    }()
+    return srv
 }
 
 // withAuth wraps an http.HandlerFunc and enforces ADMIN_API_KEY when set

@@ -33,6 +33,7 @@ jobs:
             pg_isready -h localhost -p 5432 -U infrax && break || sleep 1
           done
       - name: Run tests
+        working-directory: ./control-plane
         env:
           DATABASE_URL: postgres://infrax:changeme@localhost:5432/infrax?sslmode=disable
           ADMIN_API_KEY: testkey
