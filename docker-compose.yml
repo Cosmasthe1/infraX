@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: infrax
+      POSTGRES_USER: infrax
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U infrax -d infrax"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  control-plane:
+    build:
+      context: ./control-plane
+    environment:
+      DATABASE_URL: postgres://infrax:changeme@postgres:5432/infrax?sslmode=disable
+      ADMIN_API_KEY: dev-key
+      PORT: "9090"
+    ports:
+      - "9090:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./workers
+    environment:
+      DATABASE_URL: postgres://infrax:changeme@postgres:5432/infrax?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sample-app:
+    build:
+      context: ./apps/sample-app
+    environment:
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
