@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -83,5 +84,20 @@ func TestMemoryQueueEnqueueAndNext(t *testing.T) {
 	}
 	if ok || job != "" {
 		t.Fatalf("expected empty queue to return ok=false, got job=%q ok=%v", job, ok)
+	}
+}
+
+func TestProcessDeploymentJobRetryPolicy(t *testing.T) {
+	job := DeploymentJob{ID: "job-1", DeploymentID: 7, Tenant: "team-a", Image: "example/app:1", Attempts: 1, MaxRetries: 3}
+	err := processDeploymentJob(job, func(s string) error { return nil })
+	if err != nil {
+		t.Fatalf("expected successful processDeploymentJob, got %v", err)
+	}
+
+	job.Attempts = 3
+	job.MaxRetries = 3
+	err = processDeploymentJob(job, func(s string) error { return errors.New("boom") })
+	if err == nil {
+		t.Fatal("expected failure when retries are exhausted")
 	}
 }
