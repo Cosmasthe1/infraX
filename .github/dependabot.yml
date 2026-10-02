@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/control-plane"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "gomod"
+    directory: "/workers"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "npm"
+    directory: "/apps/sample-app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
