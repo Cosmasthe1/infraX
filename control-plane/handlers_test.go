@@ -69,6 +69,10 @@ func TestRootAndDeployHandlers(t *testing.T) {
 	// ensure DB is nil for unit-level semantics
 	DB = nil
 
+	// ensure auth wrapper captures the env at registration time
+	os.Setenv("ADMIN_API_KEY", "testkey")
+	defer os.Unsetenv("ADMIN_API_KEY")
+
 	mux := makeMuxForTest()
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -117,12 +121,11 @@ func TestRootAndDeployHandlers(t *testing.T) {
 
 func TestWebhookHandlerDefaultsTenant(t *testing.T) {
 	DB = nil
+	os.Setenv("ADMIN_API_KEY", "wkey")
+	defer os.Unsetenv("ADMIN_API_KEY")
 	mux := makeMuxForTest()
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
-
-	os.Setenv("ADMIN_API_KEY", "wkey")
-	defer os.Unsetenv("ADMIN_API_KEY")
 
 	payload := map[string]string{"image": "img:1"}
 	b, _ := json.Marshal(payload)
