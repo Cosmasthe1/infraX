@@ -67,3 +67,25 @@ func TestUpdateDeploymentStatus(t *testing.T) {
 		t.Fatal("expected Exec to be invoked for status update")
 	}
 }
+
+func TestDeploymentStateMachine(t *testing.T) {
+	job := DeploymentJob{ID: 1, DeploymentID: 42, Attempts: 0, MaxRetries: 3}
+
+	if got, ok := job.NextState(StatusQueued, nil); !ok || got != StatusRunning {
+		t.Fatalf("queued -> running transition failed: got=%s ok=%v", got, ok)
+	}
+
+	if got, ok := job.NextState(StatusRunning, nil); !ok || got != StatusSucceeded {
+		t.Fatalf("running -> succeeded transition failed: got=%s ok=%v", got, ok)
+	}
+
+	job.Attempts = 2
+	if got, ok := job.NextState(StatusRunning, errors.New("boom")); !ok || got != StatusFailed {
+		t.Fatalf("running -> failed transition failed: got=%s ok=%v", got, ok)
+	}
+
+	job.Attempts = 1
+	if got, ok := job.NextState(StatusRunning, errors.New("retryable")); !ok || got != StatusQueued {
+		t.Fatalf("running -> queued retry transition failed: got=%s ok=%v", got, ok)
+	}
+}
