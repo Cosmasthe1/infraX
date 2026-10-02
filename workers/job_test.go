@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -134,6 +135,46 @@ func TestReleaseFlowRollbackOnApplyFailure(t *testing.T) {
 	}
 	if len(calls) == 0 || !contains(calls, "rollout undo") {
 		t.Fatal("expected rollback attempt after apply failure")
+	}
+}
+
+func TestReleaseManifestUsesEnvironmentSpecificConfig(t *testing.T) {
+	os.Setenv("APP_NAME", "sample-app")
+	os.Setenv("APP_ENV", "production")
+	os.Setenv("APP_PORT", "8081")
+	os.Setenv("APP_REPLICAS", "2")
+	defer os.Unsetenv("APP_NAME")
+	defer os.Unsetenv("APP_ENV")
+	defer os.Unsetenv("APP_PORT")
+	defer os.Unsetenv("APP_REPLICAS")
+
+	cfg := buildReleaseConfig("ghcr.io/acme/app:2.0.0", "team-production")
+	manifest := renderReleaseManifest(cfg)
+	if !strings.Contains(manifest, "namespace: team-production") {
+		t.Fatalf("expected namespace to match release config, got %s", manifest)
+	}
+	if !strings.Contains(manifest, "APP_ENV") || !strings.Contains(manifest, "production") {
+		t.Fatalf("expected environment config to be rendered, got %s", manifest)
+	}
+	if !strings.Contains(manifest, "containerPort: 8081") {
+		t.Fatalf("expected app port to match config, got %s", manifest)
+	}
+}
+
+func TestClusterAuthArgsUseConfiguredKubeContext(t *testing.T) {
+	os.Setenv("KUBECONFIG", "/tmp/kubeconfig")
+	os.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+	os.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	defer os.Unsetenv("KUBECONFIG")
+	defer os.Unsetenv("KUBERNETES_SERVICE_HOST")
+	defer os.Unsetenv("KUBERNETES_SERVICE_PORT")
+
+	args := clusterAuthArgs()
+	if len(args) == 0 {
+		t.Fatal("expected cluster auth args")
+	}
+	if !contains(args, "--kubeconfig") {
+		t.Fatal("expected kubeconfig auth arg")
 	}
 }
 
