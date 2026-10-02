@@ -15,8 +15,11 @@ import (
 )
 
 type deployReq struct {
-	Tenant string `json:"tenant"`
-	Image  string `json:"image"`
+	Tenant      string            `json:"tenant"`
+	Image       string            `json:"image"`
+	Namespace   string            `json:"namespace,omitempty"`
+	Environment string            `json:"environment,omitempty"`
+	Config      map[string]string `json:"config,omitempty"`
 }
 
 var validImageRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]*$`)
@@ -47,9 +50,28 @@ func main() {
 	select {}
 }
 
-func validateDeployRequest(req deployReq) error {
+func normalizeDeployRequest(req deployReq) deployReq {
 	req.Tenant = strings.TrimSpace(req.Tenant)
 	req.Image = strings.TrimSpace(req.Image)
+	req.Namespace = strings.TrimSpace(req.Namespace)
+	req.Environment = strings.TrimSpace(req.Environment)
+	if req.Namespace == "" {
+		req.Namespace = req.Tenant
+	}
+	if req.Environment == "" {
+		req.Environment = "dev"
+	}
+	if req.Config == nil {
+		req.Config = map[string]string{}
+	}
+	for k, v := range req.Config {
+		req.Config[k] = strings.TrimSpace(v)
+	}
+	return req
+}
+
+func validateDeployRequest(req deployReq) error {
+	req = normalizeDeployRequest(req)
 	if req.Tenant == "" {
 		return errors.New("tenant is required")
 	}
@@ -216,6 +238,7 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
+		req = normalizeDeployRequest(req)
 		if err := validateDeployRequest(req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -233,12 +256,15 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 				DeploymentID: id,
 				Tenant:       req.Tenant,
 				Image:        req.Image,
+				Namespace:    req.Namespace,
+				Environment:  req.Environment,
+				Config:       req.Config,
 				Status:       StatusQueued,
 				Attempts:     0,
 				MaxRetries:   3,
 				EnqueuedAt:   time.Now(),
 			}
-			job, err = CreateDeploymentJob(id, req.Tenant, req.Image)
+			job, err = CreateDeploymentJobWithMetadata(id, req.Tenant, req.Image, req.Namespace, req.Environment, req.Config)
 			if err != nil {
 				logger.Error("deployment job insert failed", "tenant", req.Tenant, "image", req.Image, "err", err)
 				http.Error(w, "internal", http.StatusInternalServerError)
@@ -253,7 +279,7 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "tenant": req.Tenant, "image": req.Image, "deployment_id": deploymentID})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "tenant": req.Tenant, "image": req.Image, "namespace": req.Namespace, "environment": req.Environment, "config": req.Config, "deployment_id": deploymentID})
 	}))
 
 	mux.HandleFunc("/webhook", withAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -268,6 +294,9 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 		}
 		img, _ := payload["image"].(string)
 		tenant, _ := payload["tenant"].(string)
+		namespace, _ := payload["namespace"].(string)
+		environment, _ := payload["environment"].(string)
+		configMap, _ := payload["config"].(map[string]any)
 		if img == "" {
 			w.WriteHeader(http.StatusAccepted)
 			return
@@ -275,10 +304,22 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 		if tenant == "" {
 			tenant = "webhook"
 		}
-		if err := validateDeployRequest(deployReq{Tenant: tenant, Image: img}); err != nil {
+		config := make(map[string]string, len(configMap))
+		for k, v := range configMap {
+			if s, ok := v.(string); ok {
+				config[k] = s
+			}
+		}
+		candidate := normalizeDeployRequest(deployReq{Tenant: tenant, Image: img, Namespace: namespace, Environment: environment, Config: config})
+		if err := validateDeployRequest(candidate); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		namespace = candidate.Namespace
+		environment = candidate.Environment
+		config = candidate.Config
+		tenant = candidate.Tenant
+		img = candidate.Image
 		var deploymentID int64
 		if DB != nil {
 			id, err := CreateDeployment(tenant, img)
@@ -292,12 +333,15 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 				DeploymentID: id,
 				Tenant:       tenant,
 				Image:        img,
+				Namespace:    namespace,
+				Environment:  environment,
+				Config:       config,
 				Status:       StatusQueued,
 				Attempts:     0,
 				MaxRetries:   3,
 				EnqueuedAt:   time.Now(),
 			}
-			job, err = CreateDeploymentJob(id, tenant, img)
+			job, err = CreateDeploymentJobWithMetadata(id, tenant, img, namespace, environment, config)
 			if err != nil {
 				logger.Error("webhook deployment job insert failed", "tenant", tenant, "image", img, "err", err)
 				http.Error(w, "internal", http.StatusInternalServerError)
@@ -312,7 +356,7 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "tenant": tenant, "image": img, "deployment_id": deploymentID})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "tenant": tenant, "image": img, "namespace": namespace, "environment": environment, "config": config, "deployment_id": deploymentID})
 	}))
 
 	return mux
