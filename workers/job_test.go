@@ -55,3 +55,33 @@ func TestPollerProcessesJobs(t *testing.T) {
 		t.Fatalf("expected 3 processed jobs, got %d: %v", len(processed), processed)
 	}
 }
+
+func TestMemoryQueueEnqueueAndNext(t *testing.T) {
+	q := &MemoryQueue{}
+	q.Enqueue("job-1")
+	q.Enqueue("job-2")
+
+	job, ok, err := q.Next()
+	if err != nil {
+		t.Fatalf("Next returned unexpected error: %v", err)
+	}
+	if !ok || job != "job-1" {
+		t.Fatalf("expected first job job-1, got %q, ok=%v", job, ok)
+	}
+
+	job, ok, err = q.Next()
+	if err != nil {
+		t.Fatalf("Next returned unexpected error: %v", err)
+	}
+	if !ok || job != "job-2" {
+		t.Fatalf("expected second job job-2, got %q, ok=%v", job, ok)
+	}
+
+	job, ok, err = q.Next()
+	if err != nil {
+		t.Fatalf("Next returned unexpected error: %v", err)
+	}
+	if ok || job != "" {
+		t.Fatalf("expected empty queue to return ok=false, got job=%q ok=%v", job, ok)
+	}
+}
