@@ -37,6 +37,8 @@ type DeploymentJob struct {
 	MaxRetries   int              `json:"max_retries"`
 	LastError    string           `json:"last_error,omitempty"`
 	EnqueuedAt   time.Time        `json:"enqueued_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+	NextRetryAt  *time.Time       `json:"next_retry_at,omitempty"`
 }
 
 func (j DeploymentJob) NextState(current DeploymentStatus, err error) (DeploymentStatus, bool) {
@@ -126,6 +128,28 @@ func EnsureMigrations() error {
         status TEXT NOT NULL DEFAULT 'queued',
         created_at TIMESTAMPTZ DEFAULT now()
     );`)
+	if err != nil {
+		return err
+	}
+
+	_, err = DB.Exec(`CREATE TABLE IF NOT EXISTS deployment_jobs (
+        id SERIAL PRIMARY KEY,
+        deployment_id INTEGER NOT NULL UNIQUE REFERENCES deployments(id) ON DELETE CASCADE,
+        tenant TEXT NOT NULL,
+        image TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 3,
+        last_error TEXT,
+        enqueued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        next_retry_at TIMESTAMPTZ
+    );`)
+	if err != nil {
+		return err
+	}
+
+	_, err = DB.Exec(`CREATE INDEX IF NOT EXISTS idx_deployment_jobs_status_retry ON deployment_jobs(status, next_retry_at, enqueued_at)`)
 	return err
 }
 
@@ -136,6 +160,10 @@ func RecordDeployment(tenant, image string) error {
 
 func CreateDeployment(tenant, image string) (int64, error) {
 	return createDeployment(DB, tenant, image)
+}
+
+func CreateDeploymentJob(deploymentID int64, tenant, image string) (DeploymentJob, error) {
+	return createDeploymentJob(DB, deploymentID, tenant, image)
 }
 
 func createDeployment(exec dbExecutor, tenant, image string) (int64, error) {
@@ -150,7 +178,30 @@ func createDeployment(exec dbExecutor, tenant, image string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	job, err := createDeploymentJob(exec, id, tenant, image)
+	if err != nil {
+		return 0, err
+	}
+	_ = job
 	return id, nil
+}
+
+func createDeploymentJob(exec dbExecutor, deploymentID int64, tenant, image string) (DeploymentJob, error) {
+	if exec == nil {
+		return DeploymentJob{}, fmt.Errorf("database not initialized")
+	}
+	var job DeploymentJob
+	err := exec.QueryRow(`
+		INSERT INTO deployment_jobs (deployment_id, tenant, image, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at)
+		VALUES ($1, $2, $3, 'queued', 0, 3, NULL, NOW(), NOW(), NULL)
+		RETURNING id, deployment_id, tenant, image, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at
+	`, deploymentID, tenant, image).Scan(
+		&job.ID, &job.DeploymentID, &job.Tenant, &job.Image, &job.Status, &job.Attempts, &job.MaxRetries, &job.LastError, &job.EnqueuedAt, &job.UpdatedAt, &job.NextRetryAt,
+	)
+	if err != nil {
+		return DeploymentJob{}, err
+	}
+	return job, nil
 }
 
 func recordDeployment(exec dbExecutor, tenant, image string) error {
@@ -163,6 +214,52 @@ func recordDeployment(exec dbExecutor, tenant, image string) error {
 
 func UpdateDeploymentStatus(id int64, status DeploymentStatus) error {
 	return setDeploymentStatus(DB, id, status)
+}
+
+func UpdateDeploymentJobStatus(jobID int64, status DeploymentStatus, attempts int, lastErr string) error {
+	return updateDeploymentJobStatus(DB, jobID, status, attempts, lastErr)
+}
+
+func UpdateDeploymentJobStatusByDeploymentID(deploymentID int64, status DeploymentStatus, attempts int, lastErr string) error {
+	return updateDeploymentJobStatusByDeploymentID(DB, deploymentID, status, attempts, lastErr)
+}
+
+func updateDeploymentJobStatus(exec dbExecutor, jobID int64, status DeploymentStatus, attempts int, lastErr string) error {
+	if exec == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if status == "" {
+		status = StatusQueued
+	}
+	_, err := exec.Exec(`
+		UPDATE deployment_jobs
+		SET status = $1,
+		    attempts = $2,
+		    last_error = $3,
+		    updated_at = now(),
+		    next_retry_at = CASE WHEN $1 = 'queued' THEN now() + interval '5 seconds' ELSE NULL END
+		WHERE id = $4
+	`, string(status), attempts, lastErr, jobID)
+	return err
+}
+
+func updateDeploymentJobStatusByDeploymentID(exec dbExecutor, deploymentID int64, status DeploymentStatus, attempts int, lastErr string) error {
+	if exec == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	if status == "" {
+		status = StatusQueued
+	}
+	_, err := exec.Exec(`
+		UPDATE deployment_jobs
+		SET status = $1,
+		    attempts = $2,
+		    last_error = $3,
+		    updated_at = now(),
+		    next_retry_at = CASE WHEN $1 = 'queued' THEN now() + interval '5 seconds' ELSE NULL END
+		WHERE deployment_id = $4
+	`, string(status), attempts, lastErr, deploymentID)
+	return err
 }
 
 func setDeploymentStatus(exec dbExecutor, id int64, status DeploymentStatus) error {
@@ -206,4 +303,35 @@ func listDeployments(exec dbExecutor, limit int) ([]Deployment, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+func NextQueuedJob() (DeploymentJob, bool, error) {
+	return nextQueuedJob(DB)
+}
+
+func nextQueuedJob(exec dbExecutor) (DeploymentJob, bool, error) {
+	if exec == nil {
+		return DeploymentJob{}, false, nil
+	}
+	var job DeploymentJob
+	err := exec.QueryRow(`
+		SELECT id, deployment_id, tenant, image, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at
+		FROM deployment_jobs
+		WHERE status = 'queued' AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+		ORDER BY enqueued_at ASC
+		LIMIT 1
+	`).Scan(
+		&job.ID, &job.DeploymentID, &job.Tenant, &job.Image, &job.Status, &job.Attempts, &job.MaxRetries, &job.LastError, &job.EnqueuedAt, &job.UpdatedAt, &job.NextRetryAt,
+	)
+	if err == sql.ErrNoRows {
+		return DeploymentJob{}, false, nil
+	}
+	if err != nil {
+		return DeploymentJob{}, false, err
+	}
+	if _, err := exec.Exec(`UPDATE deployment_jobs SET status='running', updated_at=NOW() WHERE id=$1`, job.ID); err != nil {
+		return DeploymentJob{}, false, err
+	}
+	job.Status = StatusRunning
+	return job, true, nil
 }

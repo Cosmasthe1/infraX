@@ -18,7 +18,11 @@ import (
 
 func reportStatus(baseURL string, job DeploymentJob, status string, errMsg string) error {
 	url := fmt.Sprintf("%s/deployments/%d", strings.TrimRight(baseURL, "/"), job.DeploymentID)
-	body := map[string]any{"status": status}
+	body := map[string]any{
+		"status":      status,
+		"attempts":    job.Attempts,
+		"max_retries": job.MaxRetries,
+	}
 	if errMsg != "" {
 		body["last_error"] = errMsg
 	}
@@ -47,7 +51,26 @@ func main() {
 	controlPlaneURL := flag.String("control-plane-url", "http://localhost:9090", "control plane base URL")
 	flag.Parse()
 
-	queue := &HTTPQueue{BaseURL: *controlPlaneURL, Client: &http.Client{Timeout: 5 * time.Second}}
+	var queue Queue
+	var broker Broker
+	if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
+		var err error
+		broker, err = NewNATSBroker(natsURL)
+		if err != nil {
+			log.Printf("nats broker unavailable, falling back to HTTP: %v", err)
+		} else {
+			queue = &BrokerQueue{Broker: broker}
+		}
+	}
+	if queue == nil {
+		queue = &HTTPQueue{BaseURL: *controlPlaneURL, Client: &http.Client{Timeout: 5 * time.Second}}
+	}
+	defer func() {
+		if broker != nil {
+			_ = broker.Close()
+		}
+	}()
+
 	poller := &Poller{
 		Interval: *interval,
 		Queue:    queue,
@@ -62,11 +85,13 @@ func main() {
 			if err := reportStatus(*controlPlaneURL, job, "running", ""); err != nil {
 				return err
 			}
+			job.Attempts++
 			workErr := processDeploymentJob(job, func(image string) error {
 				log.Printf("processing deployment %d for tenant %s image %s", job.DeploymentID, job.Tenant, image)
 				return nil
 			})
 			if workErr == nil {
+				job.Attempts = 0
 				return reportStatus(*controlPlaneURL, job, "succeeded", "")
 			}
 			if job.Attempts >= job.MaxRetries {

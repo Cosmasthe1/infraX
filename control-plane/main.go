@@ -89,7 +89,14 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 
 	mux.HandleFunc("/jobs", withAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			job, ok, err := GlobalJobQueue.Next()
+			var job DeploymentJob
+			var ok bool
+			var err error
+			if DB != nil {
+				job, ok, err = NextQueuedJob()
+			} else {
+				job, ok, err = GlobalJobQueue.Next()
+			}
 			if err != nil {
 				logger.Error("next queued job failed", "err", err)
 				http.Error(w, "internal", http.StatusInternalServerError)
@@ -123,7 +130,17 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 		if job.EnqueuedAt.IsZero() {
 			job.EnqueuedAt = time.Now()
 		}
-		GlobalJobQueue.Enqueue(job)
+		if DB != nil {
+			persisted, err := CreateDeploymentJob(job.DeploymentID, job.Tenant, job.Image)
+			if err != nil {
+				logger.Error("persist job failed", "deployment_id", job.DeploymentID, "tenant", job.Tenant, "image", job.Image, "err", err)
+				http.Error(w, "internal", http.StatusInternalServerError)
+				return
+			}
+			job = persisted
+		} else {
+			GlobalJobQueue.Enqueue(job)
+		}
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(job)
 	}))
@@ -159,7 +176,10 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 			return
 		}
 		var payload struct {
-			Status string `json:"status"`
+			Status     string `json:"status"`
+			Attempts   int    `json:"attempts"`
+			LastError  string `json:"last_error"`
+			MaxRetries int    `json:"max_retries"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -169,6 +189,13 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 		if status == "" {
 			http.Error(w, "status is required", http.StatusBadRequest)
 			return
+		}
+		if payload.MaxRetries > 0 {
+			if err := updateDeploymentJobStatusByDeploymentID(DB, id, status, payload.Attempts, payload.LastError); err != nil {
+				logger.Error("deployment job status update failed", "deployment_id", id, "status", status, "err", err)
+				http.Error(w, "internal", http.StatusInternalServerError)
+				return
+			}
 		}
 		if err := UpdateDeploymentStatus(id, status); err != nil {
 			logger.Error("deployment status update failed", "id", id, "status", status, "err", err)
@@ -210,6 +237,17 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 				Attempts:     0,
 				MaxRetries:   3,
 				EnqueuedAt:   time.Now(),
+			}
+			job, err = CreateDeploymentJob(id, req.Tenant, req.Image)
+			if err != nil {
+				logger.Error("deployment job insert failed", "tenant", req.Tenant, "image", req.Image, "err", err)
+				http.Error(w, "internal", http.StatusInternalServerError)
+				return
+			}
+			if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
+				if err := PublishDeploymentJob(natsURL, job); err != nil {
+					logger.Warn("nats publish failed; falling back to queue", "deployment_id", id, "err", err)
+				}
 			}
 			GlobalJobQueue.Enqueue(job)
 		}
@@ -258,6 +296,17 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 				Attempts:     0,
 				MaxRetries:   3,
 				EnqueuedAt:   time.Now(),
+			}
+			job, err = CreateDeploymentJob(id, tenant, img)
+			if err != nil {
+				logger.Error("webhook deployment job insert failed", "tenant", tenant, "image", img, "err", err)
+				http.Error(w, "internal", http.StatusInternalServerError)
+				return
+			}
+			if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
+				if err := PublishDeploymentJob(natsURL, job); err != nil {
+					logger.Warn("nats publish failed; falling back to queue", "deployment_id", id, "err", err)
+				}
 			}
 			GlobalJobQueue.Enqueue(job)
 		}

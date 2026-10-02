@@ -28,14 +28,24 @@ services:
       postgres:
         condition: service_healthy
 
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
   worker:
     build:
       context: ./workers
     environment:
       DATABASE_URL: postgres://infrax:changeme@postgres:5432/infrax?sslmode=disable
+      NATS_URL: nats://nats:4222
     depends_on:
       postgres:
         condition: service_healthy
+      nats:
+        condition: service_started
 
   sample-app:
     build:
