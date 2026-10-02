@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type deployReq struct {
@@ -86,6 +87,47 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 		_, _ = w.Write([]byte("ready"))
 	})
 
+	mux.HandleFunc("/jobs", withAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			job, ok, err := GlobalJobQueue.Next()
+			if err != nil {
+				logger.Error("next queued job failed", "err", err)
+				http.Error(w, "internal", http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(job)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var job DeploymentJob
+		if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if job.Image == "" || job.Tenant == "" {
+			http.Error(w, "tenant and image are required", http.StatusBadRequest)
+			return
+		}
+		if job.MaxRetries <= 0 {
+			job.MaxRetries = 3
+		}
+		job.Status = StatusQueued
+		if job.EnqueuedAt.IsZero() {
+			job.EnqueuedAt = time.Now()
+		}
+		GlobalJobQueue.Enqueue(job)
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(job)
+	}))
+
 	mux.HandleFunc("/deployments", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -151,16 +193,29 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		var deploymentID int64
 		if DB != nil {
-			if err := RecordDeployment(req.Tenant, req.Image); err != nil {
+			id, err := CreateDeployment(req.Tenant, req.Image)
+			if err != nil {
 				logger.Error("deployment insert failed", "tenant", req.Tenant, "image", req.Image, "err", err)
 				http.Error(w, "internal", http.StatusInternalServerError)
 				return
 			}
+			deploymentID = id
+			job := DeploymentJob{
+				DeploymentID: id,
+				Tenant:       req.Tenant,
+				Image:        req.Image,
+				Status:       StatusQueued,
+				Attempts:     0,
+				MaxRetries:   3,
+				EnqueuedAt:   time.Now(),
+			}
+			GlobalJobQueue.Enqueue(job)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted", "tenant": req.Tenant, "image": req.Image})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "tenant": req.Tenant, "image": req.Image, "deployment_id": deploymentID})
 	}))
 
 	mux.HandleFunc("/webhook", withAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -186,16 +241,29 @@ func newServerMux(logger *slog.Logger) *http.ServeMux {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		var deploymentID int64
 		if DB != nil {
-			if err := RecordDeployment(tenant, img); err != nil {
+			id, err := CreateDeployment(tenant, img)
+			if err != nil {
 				logger.Error("webhook deployment insert failed", "tenant", tenant, "image", img, "err", err)
 				http.Error(w, "internal", http.StatusInternalServerError)
 				return
 			}
+			deploymentID = id
+			job := DeploymentJob{
+				DeploymentID: id,
+				Tenant:       tenant,
+				Image:        img,
+				Status:       StatusQueued,
+				Attempts:     0,
+				MaxRetries:   3,
+				EnqueuedAt:   time.Now(),
+			}
+			GlobalJobQueue.Enqueue(job)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted", "tenant": tenant, "image": img})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "accepted", "tenant": tenant, "image": img, "deployment_id": deploymentID})
 	}))
 
 	return mux
