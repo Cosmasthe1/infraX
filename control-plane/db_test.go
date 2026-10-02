@@ -18,6 +18,14 @@ func (f *fakeDB) Exec(query string, args ...any) (sql.Result, error) {
 	return nil, f.err
 }
 
+func (f *fakeDB) Query(query string, args ...any) (*sql.Rows, error) {
+	return nil, f.err
+}
+
+func (f *fakeDB) QueryRow(query string, args ...any) *sql.Row {
+	return nil
+}
+
 func TestRecordDeploymentUsesInjectedExecutor(t *testing.T) {
 	fake := &fakeDB{}
 
@@ -47,5 +55,15 @@ func TestRecordDeploymentPropagatesExecError(t *testing.T) {
 	err := recordDeployment(fake, "tenant-b", "registry/acme:2.0")
 	if !errors.Is(err, expected) {
 		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
+func TestUpdateDeploymentStatus(t *testing.T) {
+	fake := &fakeDB{}
+	if err := setDeploymentStatus(fake, 42, StatusRunning); err != nil {
+		t.Fatalf("setDeploymentStatus returned unexpected error: %v", err)
+	}
+	if fake.query == "" {
+		t.Fatal("expected Exec to be invoked for status update")
 	}
 }

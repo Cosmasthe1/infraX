@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -140,4 +143,58 @@ func TestWebhookHandlerDefaultsTenant(t *testing.T) {
 		t.Fatalf("expected 202 for webhook, got %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+func TestValidateDeployRequest(t *testing.T) {
+	if err := validateDeployRequest(deployReq{Tenant: "team-a", Image: "ghcr.io/acme/app:1.2.3"}); err != nil {
+		t.Fatalf("expected valid deploy request, got err: %v", err)
+	}
+
+	if err := validateDeployRequest(deployReq{Tenant: "", Image: "example/app:latest"}); err == nil {
+		t.Fatal("expected tenant validation error")
+	}
+
+	if err := validateDeployRequest(deployReq{Tenant: "team-a", Image: ""}); err == nil {
+		t.Fatal("expected image validation error")
+	}
+}
+
+func TestPlatformHealthAndDeploymentListing(t *testing.T) {
+	DB = nil
+	os.Unsetenv("ADMIN_API_KEY")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mux := newServerMux(logger)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for /healthz, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Get(ts.URL + "/deployments")
+	if err != nil {
+		t.Fatalf("GET /deployments failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for /deployments, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestRenderDeploymentManifest(t *testing.T) {
+	manifest := RenderDeploymentManifest("ghcr.io/acme/app:1.2.3", "production")
+	if !strings.Contains(manifest, "kind: Deployment") {
+		t.Fatal("expected a Kubernetes Deployment manifest")
+	}
+	if !strings.Contains(manifest, "ghcr.io/acme/app:1.2.3") {
+		t.Fatal("expected manifest to include the target image")
+	}
+	if !strings.Contains(manifest, "namespace: production") {
+		t.Fatal("expected manifest to include the target namespace")
+	}
 }
