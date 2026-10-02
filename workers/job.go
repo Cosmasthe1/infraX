@@ -30,11 +30,10 @@ func processDeploymentJob(job DeploymentJob, execute func(string) error) error {
 		return fmt.Errorf("deployment %s exhausted retries (%d/%d)", job.ID, job.Attempts, job.MaxRetries)
 	}
 	if err := execute(job.Image); err != nil {
-		job.Attempts++
 		if job.Attempts >= job.MaxRetries {
 			return fmt.Errorf("deployment %s failed after %d attempts: %w", job.ID, job.Attempts, err)
 		}
-		return nil
+		return err
 	}
 	return nil
 }
