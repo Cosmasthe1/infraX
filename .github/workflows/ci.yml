@@ -46,13 +46,18 @@ jobs:
         working-directory: ./workers
         run: golangci-lint run ./...
 
-      - name: Run unit tests
+      - name: Run unit tests and enforce coverage
         working-directory: ./control-plane
         env:
           DATABASE_URL: postgres://infrax:changeme@localhost:5432/infrax?sslmode=disable
           ADMIN_API_KEY: testkey
         run: |
-          go test ./... -v
+          set -euo pipefail
+          go test ./... -coverprofile=coverage.out -covermode=atomic
+          echo "Coverage report:"
+          go tool cover -func=coverage.out
+          # fail if total coverage below 60%
+          go tool cover -func=coverage.out | awk '/total/ {sub(/%/,"",$3); if ($3+0 < 60) {print "coverage too low:"$3"%"; exit 1} else {print "coverage OK:"$3"%"}}'
 
       - name: Run worker tests
         working-directory: ./workers
