@@ -106,3 +106,18 @@ cd control-plane && go test ./... -v
 cd ../workers && go test ./... -v
 ```
 
+## Bootstrap Terraform backend (optional)
+
+If you want to create an S3 bucket and DynamoDB table to use as a remote Terraform backend, a small bootstrap module is provided at `terraform/bootstrap`.
+
+With AWS credentials configured locally, run:
+
+```bash
+cd terraform/bootstrap
+terraform init
+terraform apply -var='bucket_name=infrax-terraform-state' -var='dynamodb_table=infrax-terraform-locks' -auto-approve
+```
+
+Then update `terraform/environments/dev/backend.tf` with the created bucket and table names and run `terraform init` in that directory.
+
+
