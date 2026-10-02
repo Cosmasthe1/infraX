@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -25,6 +26,72 @@ type Deployment struct {
 	Status    DeploymentStatus `json:"status"`
 	CreatedAt time.Time        `json:"created_at"`
 }
+
+type DeploymentJob struct {
+	ID           int64            `json:"id"`
+	DeploymentID int64            `json:"deployment_id"`
+	Tenant       string           `json:"tenant"`
+	Image        string           `json:"image"`
+	Status       DeploymentStatus `json:"status"`
+	Attempts     int              `json:"attempts"`
+	MaxRetries   int              `json:"max_retries"`
+	LastError    string           `json:"last_error,omitempty"`
+	EnqueuedAt   time.Time        `json:"enqueued_at"`
+}
+
+func (j DeploymentJob) NextState(current DeploymentStatus, err error) (DeploymentStatus, bool) {
+	if current == StatusQueued && err == nil {
+		return StatusRunning, true
+	}
+	if current == StatusRunning && err == nil {
+		return StatusSucceeded, true
+	}
+	if current == StatusRunning && err != nil {
+		limit := j.MaxRetries
+		if limit <= 0 {
+			limit = 3
+		}
+		if j.Attempts >= limit-1 {
+			return StatusFailed, true
+		}
+		return StatusQueued, true
+	}
+	return "", false
+}
+
+type JobQueue struct {
+	mu   sync.Mutex
+	jobs []DeploymentJob
+}
+
+func NewJobQueue() *JobQueue {
+	return &JobQueue{}
+}
+
+func (q *JobQueue) Enqueue(job DeploymentJob) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.jobs = append(q.jobs, job)
+}
+
+func (q *JobQueue) Next() (DeploymentJob, bool, error) {
+	if q == nil {
+		return DeploymentJob{}, false, nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.jobs) == 0 {
+		return DeploymentJob{}, false, nil
+	}
+	job := q.jobs[0]
+	q.jobs = q.jobs[1:]
+	return job, true, nil
+}
+
+var GlobalJobQueue = NewJobQueue()
 
 type dbExecutor interface {
 	Exec(query string, args ...any) (sql.Result, error)
@@ -63,7 +130,27 @@ func EnsureMigrations() error {
 }
 
 func RecordDeployment(tenant, image string) error {
-	return recordDeployment(DB, tenant, image)
+	_, err := CreateDeployment(tenant, image)
+	return err
+}
+
+func CreateDeployment(tenant, image string) (int64, error) {
+	return createDeployment(DB, tenant, image)
+}
+
+func createDeployment(exec dbExecutor, tenant, image string) (int64, error) {
+	if exec == nil {
+		return 0, fmt.Errorf("database not initialized")
+	}
+	if tenant == "" || image == "" {
+		return 0, fmt.Errorf("tenant and image are required")
+	}
+	var id int64
+	err := exec.QueryRow(`INSERT INTO deployments (tenant, image, status) VALUES ($1, $2, 'queued') RETURNING id`, tenant, image).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func recordDeployment(exec dbExecutor, tenant, image string) error {
