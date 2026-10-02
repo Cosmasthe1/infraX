@@ -198,3 +198,28 @@ func TestRenderDeploymentManifest(t *testing.T) {
 		t.Fatal("expected manifest to include the target namespace")
 	}
 }
+
+func TestDeployRequestAcceptsNamespaceEnvironmentAndConfig(t *testing.T) {
+	req := deployReq{
+		Tenant:      "team-a",
+		Image:       "ghcr.io/acme/app:2.0.0",
+		Namespace:   "team-production",
+		Environment: "production",
+		Config: map[string]string{
+			"LOG_LEVEL": "debug",
+			"FEATURE_X": "true",
+		},
+	}
+	if err := validateDeployRequest(req); err != nil {
+		t.Fatalf("expected valid deploy request with env and namespace metadata, got %v", err)
+	}
+	if req.Namespace != "team-production" {
+		t.Fatal("expected namespace to be preserved")
+	}
+	if req.Environment != "production" {
+		t.Fatal("expected environment to be preserved")
+	}
+	if req.Config["LOG_LEVEL"] != "debug" {
+		t.Fatal("expected config payload to be preserved")
+	}
+}
