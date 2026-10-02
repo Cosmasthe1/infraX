@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,4 +101,47 @@ func TestProcessDeploymentJobRetryPolicy(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected failure when retries are exhausted")
 	}
+}
+
+func TestRenderReleaseManifest(t *testing.T) {
+	manifest := renderReleaseManifest("ghcr.io/acme/app:1.2.3", "team-a")
+	if manifest == "" {
+		t.Fatal("expected rendered manifest content")
+	}
+	if !strings.Contains(manifest, "kind: Deployment") {
+		t.Fatal("expected deployment manifest")
+	}
+	if !strings.Contains(manifest, "ghcr.io/acme/app:1.2.3") {
+		t.Fatal("expected image in manifest")
+	}
+	if !strings.Contains(manifest, "namespace: team-a") {
+		t.Fatal("expected namespace in manifest")
+	}
+}
+
+func TestReleaseFlowRollbackOnApplyFailure(t *testing.T) {
+	calls := []string{}
+	runner := func(args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) >= 2 && args[0] == "apply" {
+			return nil, errors.New("apply failed")
+		}
+		return []byte("ok"), nil
+	}
+
+	if err := runReleaseWithRunner(runner, "ghcr.io/acme/app:1.2.3", "team-a"); err == nil {
+		t.Fatal("expected apply failure to be returned")
+	}
+	if len(calls) == 0 || !contains(calls, "rollout undo") {
+		t.Fatal("expected rollback attempt after apply failure")
+	}
+}
+
+func contains(items []string, want string) bool {
+	for _, item := range items {
+		if strings.Contains(item, want) {
+			return true
+		}
+	}
+	return false
 }
