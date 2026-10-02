@@ -52,7 +52,7 @@ go run .
 
 ```bash
 cd control-plane
-go test ./...
+go test ./... -v
 ```
 
 The default test suite is unit-test friendly and avoids requiring a live external Postgres instance. The integration test remains opt-in behind the `integration` build tag.
@@ -79,3 +79,30 @@ The project is organized into:
 - `terraform`: minimal IaC module structure for future environments
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the implementation notes and next steps.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for recent notable changes and the current Unreleased section.
+
+## Quick verification checklist
+
+- Start the stack with Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+- Confirm the control plane is serving:
+
+```bash
+curl -sS http://localhost:9090/
+# expect: infraX control plane (skeleton)
+```
+
+- Run unit tests locally:
+
+```bash
+cd control-plane && go test ./... -v
+cd ../workers && go test ./... -v
+```
+
