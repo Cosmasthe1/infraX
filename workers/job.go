@@ -12,14 +12,17 @@ import (
 
 // Queue provides jobs to the Poller. Next returns (job, ok, err).
 type DeploymentJob struct {
-	ID           string `json:"id"`
-	DeploymentID int64  `json:"deployment_id"`
-	Tenant       string `json:"tenant"`
-	Image        string `json:"image"`
-	Attempts     int    `json:"attempts"`
-	MaxRetries   int    `json:"max_retries"`
-	Status       string `json:"status"`
-	LastError    string `json:"last_error,omitempty"`
+	ID           string            `json:"id"`
+	DeploymentID int64             `json:"deployment_id"`
+	Tenant       string            `json:"tenant"`
+	Image        string            `json:"image"`
+	Namespace    string            `json:"namespace,omitempty"`
+	Environment  string            `json:"environment,omitempty"`
+	Config       map[string]string `json:"config,omitempty"`
+	Attempts     int               `json:"attempts"`
+	MaxRetries   int               `json:"max_retries"`
+	Status       string            `json:"status"`
+	LastError    string            `json:"last_error,omitempty"`
 }
 
 func processDeploymentJob(job DeploymentJob, execute func(string) error) error {

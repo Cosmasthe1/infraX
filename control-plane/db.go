@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -20,25 +21,30 @@ const (
 )
 
 type Deployment struct {
-	ID        int64            `json:"id"`
-	Tenant    string           `json:"tenant"`
-	Image     string           `json:"image"`
-	Status    DeploymentStatus `json:"status"`
-	CreatedAt time.Time        `json:"created_at"`
+	ID          int64            `json:"id"`
+	Tenant      string           `json:"tenant"`
+	Image       string           `json:"image"`
+	Namespace   string           `json:"namespace,omitempty"`
+	Environment string           `json:"environment,omitempty"`
+	Status      DeploymentStatus `json:"status"`
+	CreatedAt   time.Time        `json:"created_at"`
 }
 
 type DeploymentJob struct {
-	ID           int64            `json:"id"`
-	DeploymentID int64            `json:"deployment_id"`
-	Tenant       string           `json:"tenant"`
-	Image        string           `json:"image"`
-	Status       DeploymentStatus `json:"status"`
-	Attempts     int              `json:"attempts"`
-	MaxRetries   int              `json:"max_retries"`
-	LastError    string           `json:"last_error,omitempty"`
-	EnqueuedAt   time.Time        `json:"enqueued_at"`
-	UpdatedAt    time.Time        `json:"updated_at"`
-	NextRetryAt  *time.Time       `json:"next_retry_at,omitempty"`
+	ID           int64             `json:"id"`
+	DeploymentID int64             `json:"deployment_id"`
+	Tenant       string            `json:"tenant"`
+	Image        string            `json:"image"`
+	Namespace    string            `json:"namespace,omitempty"`
+	Environment  string            `json:"environment,omitempty"`
+	Config       map[string]string `json:"config,omitempty"`
+	Status       DeploymentStatus  `json:"status"`
+	Attempts     int               `json:"attempts"`
+	MaxRetries   int               `json:"max_retries"`
+	LastError    string            `json:"last_error,omitempty"`
+	EnqueuedAt   time.Time         `json:"enqueued_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	NextRetryAt  *time.Time        `json:"next_retry_at,omitempty"`
 }
 
 func (j DeploymentJob) NextState(current DeploymentStatus, err error) (DeploymentStatus, bool) {
@@ -125,9 +131,19 @@ func EnsureMigrations() error {
         id SERIAL PRIMARY KEY,
         tenant TEXT NOT NULL,
         image TEXT NOT NULL,
+        namespace TEXT,
+        environment TEXT DEFAULT 'dev',
         status TEXT NOT NULL DEFAULT 'queued',
         created_at TIMESTAMPTZ DEFAULT now()
     );`)
+	if err != nil {
+		return err
+	}
+	_, err = DB.Exec(`ALTER TABLE deployments ADD COLUMN IF NOT EXISTS namespace TEXT`)
+	if err != nil {
+		return err
+	}
+	_, err = DB.Exec(`ALTER TABLE deployments ADD COLUMN IF NOT EXISTS environment TEXT DEFAULT 'dev'`)
 	if err != nil {
 		return err
 	}
@@ -137,6 +153,9 @@ func EnsureMigrations() error {
         deployment_id INTEGER NOT NULL UNIQUE REFERENCES deployments(id) ON DELETE CASCADE,
         tenant TEXT NOT NULL,
         image TEXT NOT NULL,
+        namespace TEXT,
+        environment TEXT DEFAULT 'dev',
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
         status TEXT NOT NULL DEFAULT 'queued',
         attempts INTEGER NOT NULL DEFAULT 0,
         max_retries INTEGER NOT NULL DEFAULT 3,
@@ -145,6 +164,18 @@ func EnsureMigrations() error {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         next_retry_at TIMESTAMPTZ
     );`)
+	if err != nil {
+		return err
+	}
+	_, err = DB.Exec(`ALTER TABLE deployment_jobs ADD COLUMN IF NOT EXISTS namespace TEXT`)
+	if err != nil {
+		return err
+	}
+	_, err = DB.Exec(`ALTER TABLE deployment_jobs ADD COLUMN IF NOT EXISTS environment TEXT DEFAULT 'dev'`)
+	if err != nil {
+		return err
+	}
+	_, err = DB.Exec(`ALTER TABLE deployment_jobs ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb`)
 	if err != nil {
 		return err
 	}
@@ -163,7 +194,11 @@ func CreateDeployment(tenant, image string) (int64, error) {
 }
 
 func CreateDeploymentJob(deploymentID int64, tenant, image string) (DeploymentJob, error) {
-	return createDeploymentJob(DB, deploymentID, tenant, image)
+	return createDeploymentJob(DB, deploymentID, tenant, image, "", "dev", nil)
+}
+
+func CreateDeploymentJobWithMetadata(deploymentID int64, tenant, image, namespace, environment string, config map[string]string) (DeploymentJob, error) {
+	return createDeploymentJob(DB, deploymentID, tenant, image, namespace, environment, config)
 }
 
 func createDeployment(exec dbExecutor, tenant, image string) (int64, error) {
@@ -178,7 +213,7 @@ func createDeployment(exec dbExecutor, tenant, image string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	job, err := createDeploymentJob(exec, id, tenant, image)
+	job, err := createDeploymentJob(exec, id, tenant, image, tenant, "dev", nil)
 	if err != nil {
 		return 0, err
 	}
@@ -186,20 +221,33 @@ func createDeployment(exec dbExecutor, tenant, image string) (int64, error) {
 	return id, nil
 }
 
-func createDeploymentJob(exec dbExecutor, deploymentID int64, tenant, image string) (DeploymentJob, error) {
+func createDeploymentJob(exec dbExecutor, deploymentID int64, tenant, image, namespace, environment string, config map[string]string) (DeploymentJob, error) {
 	if exec == nil {
 		return DeploymentJob{}, fmt.Errorf("database not initialized")
 	}
+	if namespace == "" {
+		namespace = tenant
+	}
+	if environment == "" {
+		environment = "dev"
+	}
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return DeploymentJob{}, err
+	}
 	var job DeploymentJob
-	err := exec.QueryRow(`
-		INSERT INTO deployment_jobs (deployment_id, tenant, image, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at)
-		VALUES ($1, $2, $3, 'queued', 0, 3, NULL, NOW(), NOW(), NULL)
-		RETURNING id, deployment_id, tenant, image, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at
-	`, deploymentID, tenant, image).Scan(
-		&job.ID, &job.DeploymentID, &job.Tenant, &job.Image, &job.Status, &job.Attempts, &job.MaxRetries, &job.LastError, &job.EnqueuedAt, &job.UpdatedAt, &job.NextRetryAt,
+	err = exec.QueryRow(`
+		INSERT INTO deployment_jobs (deployment_id, tenant, image, namespace, environment, config, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'queued', 0, 3, NULL, NOW(), NOW(), NULL)
+		RETURNING id, deployment_id, tenant, image, namespace, environment, config, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at
+	`, deploymentID, tenant, image, namespace, environment, string(configJSON)).Scan(
+		&job.ID, &job.DeploymentID, &job.Tenant, &job.Image, &job.Namespace, &job.Environment, &job.Config, &job.Status, &job.Attempts, &job.MaxRetries, &job.LastError, &job.EnqueuedAt, &job.UpdatedAt, &job.NextRetryAt,
 	)
 	if err != nil {
 		return DeploymentJob{}, err
+	}
+	if job.Config == nil {
+		job.Config = map[string]string{}
 	}
 	return job, nil
 }
@@ -314,20 +362,35 @@ func nextQueuedJob(exec dbExecutor) (DeploymentJob, bool, error) {
 		return DeploymentJob{}, false, nil
 	}
 	var job DeploymentJob
+	var configJSON []byte
 	err := exec.QueryRow(`
-		SELECT id, deployment_id, tenant, image, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at
+		SELECT id, deployment_id, tenant, image, namespace, environment, config, status, attempts, max_retries, last_error, enqueued_at, updated_at, next_retry_at
 		FROM deployment_jobs
 		WHERE status = 'queued' AND (next_retry_at IS NULL OR next_retry_at <= NOW())
 		ORDER BY enqueued_at ASC
 		LIMIT 1
 	`).Scan(
-		&job.ID, &job.DeploymentID, &job.Tenant, &job.Image, &job.Status, &job.Attempts, &job.MaxRetries, &job.LastError, &job.EnqueuedAt, &job.UpdatedAt, &job.NextRetryAt,
+		&job.ID, &job.DeploymentID, &job.Tenant, &job.Image, &job.Namespace, &job.Environment, &configJSON, &job.Status, &job.Attempts, &job.MaxRetries, &job.LastError, &job.EnqueuedAt, &job.UpdatedAt, &job.NextRetryAt,
 	)
 	if err == sql.ErrNoRows {
 		return DeploymentJob{}, false, nil
 	}
 	if err != nil {
 		return DeploymentJob{}, false, err
+	}
+	if len(configJSON) > 0 {
+		if err := json.Unmarshal(configJSON, &job.Config); err != nil {
+			return DeploymentJob{}, false, err
+		}
+	}
+	if job.Config == nil {
+		job.Config = map[string]string{}
+	}
+	if job.Namespace == "" {
+		job.Namespace = job.Tenant
+	}
+	if job.Environment == "" {
+		job.Environment = "dev"
 	}
 	if _, err := exec.Exec(`UPDATE deployment_jobs SET status='running', updated_at=NOW() WHERE id=$1`, job.ID); err != nil {
 		return DeploymentJob{}, false, err

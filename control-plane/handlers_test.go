@@ -210,6 +210,7 @@ func TestDeployRequestAcceptsNamespaceEnvironmentAndConfig(t *testing.T) {
 			"FEATURE_X": "true",
 		},
 	}
+	req = normalizeDeployRequest(req)
 	if err := validateDeployRequest(req); err != nil {
 		t.Fatalf("expected valid deploy request with env and namespace metadata, got %v", err)
 	}

@@ -287,8 +287,33 @@ func normalizeNamespace(value string) string {
 }
 
 func deployToKubernetes(image, namespace string) error {
-	ns := normalizeNamespace(namespace)
-	return executeReleaseWithKubectl(image, ns)
+	return deployToKubernetesWithConfig(image, namespace, "", nil)
+}
+
+func deployToKubernetesWithConfig(image, namespace, environment string, config map[string]string) error {
+	cfg := buildReleaseConfig(image, namespace)
+	if environment != "" {
+		cfg.Environment = strings.TrimSpace(environment)
+	}
+	if config != nil {
+		for k, v := range config {
+			cfg.Config[k] = v
+		}
+	}
+	return executeReleaseWithConfig(cfg)
+}
+
+func executeReleaseWithConfig(cfg ReleaseConfig) error {
+	manifest := renderReleaseManifest(cfg)
+	if err := runKubectlApply(manifest, cfg.Namespace); err != nil {
+		_ = rollbackRelease(cfg.Namespace, cfg.AppName)
+		return err
+	}
+	if err := runKubectlRolloutStatus(cfg.Namespace, cfg.AppName, 120*time.Second); err != nil {
+		_ = rollbackRelease(cfg.Namespace, cfg.AppName)
+		return err
+	}
+	return nil
 }
 
 func waitForRollout(driver *releaseExecutor, namespace, name string, timeout time.Duration) error {

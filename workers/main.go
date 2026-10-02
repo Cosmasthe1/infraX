@@ -87,8 +87,15 @@ func main() {
 			}
 			job.Attempts++
 			workErr := processDeploymentJob(job, func(image string) error {
-				log.Printf("processing deployment %d for tenant %s image %s", job.DeploymentID, job.Tenant, image)
-				return deployToKubernetes(image, job.Tenant)
+				namespace := strings.TrimSpace(job.Namespace)
+				if namespace == "" {
+					namespace = strings.TrimSpace(job.Tenant)
+				}
+				if namespace == "" {
+					namespace = "default"
+				}
+				log.Printf("processing deployment %d for tenant %s namespace %s environment %s image %s", job.DeploymentID, job.Tenant, namespace, job.Environment, image)
+				return deployToKubernetesWithConfig(image, namespace, job.Environment, job.Config)
 			})
 			if workErr == nil {
 				job.Attempts = 0
