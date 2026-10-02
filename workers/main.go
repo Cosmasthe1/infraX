@@ -88,7 +88,7 @@ func main() {
 			job.Attempts++
 			workErr := processDeploymentJob(job, func(image string) error {
 				log.Printf("processing deployment %d for tenant %s image %s", job.DeploymentID, job.Tenant, image)
-				return nil
+				return deployToKubernetes(image, job.Tenant)
 			})
 			if workErr == nil {
 				job.Attempts = 0
